@@ -10,7 +10,13 @@ from typing import Optional
 from ml.disease_detector import predict_disease
 from db_handler import save_disease_history, get_disease_history
 
-app = FastAPI(title="AgriSaarthi API")
+
+
+app = FastAPI(
+    title="AgriSaarthi API",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 app.add_middleware(
     CORSMiddleware,
