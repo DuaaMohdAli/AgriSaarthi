@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:8000/api'; // Update to Render URL in production
+const API_BASE = 'https://agri-saarthi-backend.onrender.com'; // Update to Render URL in production
 
 // Tab Logic
 const tabBtns = document.querySelectorAll('.tab-btn');
