@@ -20,7 +20,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://agrisaarthi.netlify.app"],
+    allow_origins=["https://agrisaarti.netlify.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
