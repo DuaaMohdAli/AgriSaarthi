@@ -1,17 +1,19 @@
 import os
 import tempfile
 import datetime
-import mysql.connector
 import pandas as pd
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 from ml.disease_detector import predict_disease
 from db_handler import save_disease_history, get_disease_history
 
-app = FastAPI(title="AgriSaarthi API", docs_url="/docs", redoc_url="/redoc")
+app = FastAPI(
+    title="AgriSaarthi API",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,37 +23,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── MySQL config ─────────────────────────────────────────────────────────────
-DB_CONFIG = {
-    "host":     "localhost",
-    "user":     "root",
-    "password": "",           # your MySQL password
-    "database": "dbmsproject"
-}
+BASE_DIR = Path(__file__).parent
+CROP_DATA_PATH = BASE_DIR / "data" / "crop_profiles.csv"
+PRICE_DATA_PATH = BASE_DIR / "data" / "market_prices.csv"
 
-def get_connection():
-    return mysql.connector.connect(**DB_CONFIG)
+if not CROP_DATA_PATH.exists():
+    CROP_DATA_PATH = BASE_DIR / "crop_profiles.csv"
+if not PRICE_DATA_PATH.exists():
+    PRICE_DATA_PATH = BASE_DIR / "market_prices.csv"
 
-# ── Season mapping (month → Kharif/Rabi) ────────────────────────────────────
-def get_season():
-    month = datetime.datetime.now().month
-    if month in [6, 7, 8, 9, 10]:
-        return "Kharif"       # Monsoon/Rainy
-    elif month in [11, 12, 1, 2, 3]:
-        return "Rabi"         # Winter
-    else:
-        return "Kharif"       # Summer → fallback to Kharif
 
-# ── Water mapping (frontend value → DB value) ────────────────────────────────
-def map_water(water: str) -> list:
-    """If user selects Low, also include Medium as fallback"""
-    water = water.strip().capitalize()
-    if water == "Low":
-        return ["Low", "Medium"]
-    elif water == "Medium":
-        return ["Medium", "High"]
-    else:
-        return ["High"]
+def load_crop_data():
+    try:
+        crops = pd.read_csv(CROP_DATA_PATH)
+        prices = pd.read_csv(PRICE_DATA_PATH)
+
+        crops.columns = crops.columns.str.strip().str.lower()
+        prices.columns = prices.columns.str.strip().str.lower()
+
+        def fix_crop_column(df):
+            for col in df.columns:
+                if col in ["crop", "crop_name", "crop name", "commodity", "name"]:
+                    df.rename(columns={col: "crop"}, inplace=True)
+                    return df
+            return df
+
+        crops = fix_crop_column(crops)
+        prices = fix_crop_column(prices)
+
+        print("CROPS columns:", crops.columns.tolist())
+        print("PRICES columns:", prices.columns.tolist())
+
+        return crops, prices
+
+    except Exception as e:
+        print(f"Error loading crop data: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+
+crops, prices = load_crop_data()
+
 
 class CropRequest(BaseModel):
     state: str
@@ -60,95 +71,63 @@ class CropRequest(BaseModel):
     water: str
     lang: str = "en"
 
+
 @app.post("/api/recommend_crop")
 def recommend_crop(req: CropRequest):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(dictionary=True)
+    if crops.empty or prices.empty:
+        raise HTTPException(status_code=500, detail="Crop data not available")
 
-        season = get_season()
-        water_options = map_water(req.water)
-        water_placeholders = ", ".join(["%s"] * len(water_options))
+    month = datetime.datetime.now().month
+    season = ("Rainy / Monsoon" if month in [6, 7, 8, 9, 10]
+              else "Winter" if month in [11, 12, 1, 2, 3]
+              else "Summer")
 
-        # ── Main query joining all tables ────────────────────────────────────
-        query = f"""
-            SELECT 
-                cs.crop_name,
-                cr.soil_type,
-                cr.profit_range,
-                cr.water_recommendation,
-                mp.current_price,
-                mp.price_trend,
-                s.season_name
-            FROM crop_recommendation cr
-            JOIN crop_season cs2 
-                ON cs2.season = %s
-            JOIN crop_soil cs 
-                ON cs.crop_name = cs2.crop_name
-                AND cs.soil_type = cr.soil_type
-            JOIN season s 
-                ON s.crop_id = cr.crop_id
-                AND s.season_name = %s
-            JOIN market_price mp 
-                ON mp.market_id = cr.market_id
-            WHERE cr.water_recommendation IN ({water_placeholders})
-            LIMIT 10
-        """
+    base_filter = (
+        (crops["ph_min"] <= req.soil_ph) &
+        (crops["ph_max"] >= req.soil_ph) &
+        (crops["climate_zone"].str.lower() == req.climate_zone.lower())
+    )
 
-        params = [season, season] + water_options
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+    # Strict match first
+    filtered = crops[
+        base_filter &
+        (crops["water_need"].str.lower() == req.water.lower()) &
+        (crops["season"].str.lower() == season.lower())
+    ]
 
-        # ── Fallback: ignore season if empty ────────────────────────────────
-        if not rows:
-            query_fallback = f"""
-                SELECT 
-                    cs.crop_name,
-                    cr.soil_type,
-                    cr.profit_range,
-                    cr.water_recommendation,
-                    mp.current_price,
-                    mp.price_trend
-                FROM crop_recommendation cr
-                JOIN crop_soil cs 
-                    ON cs.soil_type = cr.soil_type
-                JOIN market_price mp 
-                    ON mp.market_id = cr.market_id
-                WHERE cr.water_recommendation IN ({water_placeholders})
-                LIMIT 10
-            """
-            cursor.execute(query_fallback, water_options)
-            rows = cursor.fetchall()
+    # Relax season if empty
+    if filtered.empty:
+        filtered = crops[
+            base_filter &
+            (crops["water_need"].str.lower() == req.water.lower())
+        ]
 
-        cursor.close()
-        conn.close()
+    # Relax water too if still empty
+    if filtered.empty:
+        filtered = crops[base_filter]
 
-        if not rows:
-            return {"success": False, "message": "No matching crops found", "crops": []}
+    if filtered.empty:
+        return {"success": False, "message": "No matching crops found", "crops": []}
 
-        # ── Sort by profit and return top 3 ─────────────────────────────────
-        rows.sort(key=lambda x: x["profit_range"], reverse=True)
-        top3 = rows[:3]
+    result = pd.merge(filtered, prices, on="crop", how="inner")
+    result["Profit_Index"] = result["base_yield"] * result["base_price"]
+    result = result.sort_values("Profit_Index", ascending=False).head(3)
 
-        recommended = []
-        for row in top3:
-            recommended.append({
-                "crop":          row["crop_name"],
-                "profit_index":  float(row["profit_range"]),
-                "water_need":    row["water_recommendation"],
-                "price":         float(row["current_price"]),
-                "price_trend":   row.get("price_trend", "N/A"),
-                "sowing_months": "See local calendar",
-                "fertilizer":    "Consult local agronomist"
-            })
+    recommended = []
+    for _, row in result.iterrows():
+        crop_name = row.get(f"crop_{req.lang}", row["crop"]) if req.lang in ["hi", "ta", "te", "ml"] else row["crop"]
+        recommended.append({
+            "crop": crop_name,
+            "profit_index": float(row["Profit_Index"]),
+            "water_need": row["water_need"],
+            "carbon_footprint": row.get("carbon_footprint", "N/A"),
+            "sowing_months": row.get("sowing_months", "N/A"),
+            "fertilizer": row.get("fertilizer", "N/A")
+        })
 
-        return {"success": True, "crops": recommended}
-
-    except Exception as e:
-        return {"success": False, "message": str(e), "crops": []}
+    return {"success": True, "crops": recommended}
 
 
-# ── Disease detection (unchanged) ────────────────────────────────────────────
 @app.post("/api/detect_disease")
 async def detect_disease(
     farmer_name: str = Form(...),
@@ -167,23 +146,23 @@ async def detect_disease(
             os.unlink(tmp_path)
 
     if lang in ["hi", "ta", "te", "ml"]:
-        disease_display    = result.get(f"disease_{lang}", result["disease"]).replace("_", " ")
-        crop_display       = result.get(f"crop_{lang}", result["crop"])
-        remedy_display     = result.get(f"remedy_{lang}", result["remedy"])
+        disease_display     = result.get(f"disease_{lang}", result["disease"]).replace("_", " ")
+        crop_display        = result.get(f"crop_{lang}", result["crop"])
+        remedy_display      = result.get(f"remedy_{lang}", result["remedy"])
         precautions_display = result.get(f"precautions_{lang}", result["precautions"])
     else:
-        disease_display    = result["disease"].replace("_", " ")
-        crop_display       = result["crop"]
-        remedy_display     = result["remedy"]
+        disease_display     = result["disease"].replace("_", " ")
+        crop_display        = result["crop"]
+        remedy_display      = result["remedy"]
         precautions_display = result["precautions"]
 
     save_disease_history(
         farmer_name, crop_display, disease_display,
-        result.get("remedy_en", ""),      result.get("precautions_en", ""),
-        result.get("remedy_hi", ""),      result.get("precautions_hi", ""),
-        result.get("remedy_ta", ""),      result.get("precautions_ta", ""),
-        result.get("remedy_te", ""),      result.get("precautions_te", ""),
-        result.get("remedy_ml", ""),      result.get("precautions_ml", ""),
+        result.get("remedy_en", ""),  result.get("precautions_en", ""),
+        result.get("remedy_hi", ""),  result.get("precautions_hi", ""),
+        result.get("remedy_ta", ""),  result.get("precautions_ta", ""),
+        result.get("remedy_te", ""),  result.get("precautions_te", ""),
+        result.get("remedy_ml", ""),  result.get("precautions_ml", ""),
     )
 
     return {
@@ -196,7 +175,6 @@ async def detect_disease(
     }
 
 
-# ── History ──────────────────────────────────────────────────────────────────
 @app.get("/api/history")
 def get_history():
     try:
@@ -204,6 +182,7 @@ def get_history():
         return {"success": True, "history": df.fillna("").to_dict(orient="records")}
     except Exception as e:
         return {"success": False, "message": str(e), "history": []}
+
 
 @app.get("/")
 def read_root():
