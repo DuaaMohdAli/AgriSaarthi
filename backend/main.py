@@ -32,6 +32,15 @@ if not CROP_DATA_PATH.exists():
 if not PRICE_DATA_PATH.exists():
     PRICE_DATA_PATH = BASE_DIR / "market_prices.csv"
 
+@app.get("/api/admin/rawdb")
+def raw_db():
+    import sqlite3
+    conn = sqlite3.connect("farmer_history.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, farmer_name, crop, disease, timestamp FROM disease_history")
+    rows = cursor.fetchall()
+    conn.close()
+    return {"table": "disease_history", "rows": rows}
 
 def load_crop_data():
     try:
