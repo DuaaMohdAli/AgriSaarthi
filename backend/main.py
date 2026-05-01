@@ -36,24 +36,78 @@ if not CROP_DATA_PATH.exists():
 if not PRICE_DATA_PATH.exists():
     PRICE_DATA_PATH = BASE_DIR / "market_prices.csv"
 
+# def load_crop_data():
+#     try:
+#         crops = pd.read_csv(CROP_DATA_PATH)
+#         prices = pd.read_csv(PRICE_DATA_PATH)
+
+#         crops.columns = crops.columns.str.strip().str.lower()
+#         prices.columns = prices.columns.str.strip().str.lower()
+
+#         # Normalize possible crop column names
+#         def fix_crop_column(df):
+#             for col in df.columns:
+#                 if col in ["crop", "crop_name", "crop name", "commodity", "name"]:
+#                     df.rename(columns={col: "crop"}, inplace=True)
+#                     return df
+#             return df
+
+#         crops = fix_crop_column(crops)
+#         prices = fix_crop_column(prices)
+
+#         # DEBUG (important)
+#         print("CROPS columns:", crops.columns)
+#         print("PRICES columns:", prices.columns)
+
+#         return crops, prices
+
+#     except Exception as e:
+#         print(f"Error loading crop data: {e}")
+#         return pd.DataFrame(), pd.DataFrame()
+
+# # DEBUG (important)
+#     print("CROPS columns:", crops.columns)
+#     print("PRICES columns:", prices.columns)
+#     return crops, prices
+
+# except Exception as e:
+#        print(f"Error loading crop data: {e}")
+#        return pd.DataFrame(), pd.DataFrame()
+
+# crops, prices = load_crop_data()
+
 def load_crop_data():
     try:
         crops = pd.read_csv(CROP_DATA_PATH)
         prices = pd.read_csv(PRICE_DATA_PATH)
 
+        # Normalize column names
         crops.columns = crops.columns.str.strip().str.lower()
         prices.columns = prices.columns.str.strip().str.lower()
 
-        if "crop" not in crops.columns and "crop_name" in crops.columns:
-            crops = crops.rename(columns={"crop_name": "crop"})
-        if "crop" not in prices.columns and "crop_name" in prices.columns:
-            prices = prices.rename(columns={"crop_name": "crop"})
+        # Fix crop column naming
+        def fix_crop_column(df):
+            for col in df.columns:
+                if col in ["crop", "crop_name", "crop name", "commodity", "name"]:
+                    df.rename(columns={col: "crop"}, inplace=True)
+                    return df
+            return df
+
+        crops = fix_crop_column(crops)
+        prices = fix_crop_column(prices)
+
+        # Debug (very useful)
+        print("CROPS columns:", crops.columns)
+        print("PRICES columns:", prices.columns)
 
         return crops, prices
+
     except Exception as e:
         print(f"Error loading crop data: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
+
+# Load data once
 crops, prices = load_crop_data()
 
 class CropRequest(BaseModel):
