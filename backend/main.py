@@ -32,15 +32,49 @@ if not CROP_DATA_PATH.exists():
 if not PRICE_DATA_PATH.exists():
     PRICE_DATA_PATH = BASE_DIR / "market_prices.csv"
 
+# @app.get("/api/admin/rawdb")
+# def raw_db():
+#     import sqlite3
+#     conn = sqlite3.connect("farmer_history.db")
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT id, farmer_name, crop, disease, timestamp FROM disease_history")
+#     rows = cursor.fetchall()
+#     conn.close()
+#     return {"table": "disease_history", "rows": rows}
+
 @app.get("/api/admin/rawdb")
 def raw_db():
     import sqlite3
-    conn = sqlite3.connect("farmer_history.db")
+    import os
+    
+    # Find the db file wherever it is
+    possible_paths = [
+        "farmer_history.db",
+        "/opt/render/project/src/farmer_history.db",
+        "/opt/render/project/src/backend/farmer_history.db",
+        str(BASE_DIR / "farmer_history.db"),
+    ]
+    
+    db_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            db_path = path
+            break
+    
+    if not db_path:
+        return {
+            "error": "Database not found",
+            "searched": possible_paths,
+            "cwd": os.getcwd(),
+            "files": os.listdir(os.getcwd())
+        }
+    
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT id, farmer_name, crop, disease, timestamp FROM disease_history")
     rows = cursor.fetchall()
     conn.close()
-    return {"table": "disease_history", "rows": rows}
+    return {"table": "disease_history", "db_path": db_path, "rows": rows}
 
 def load_crop_data():
     try:
